@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: kanpur-road-watch
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/reports
+    disk:
+      name: road-watch-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: CARTO_API_KEY
+        sync: false
