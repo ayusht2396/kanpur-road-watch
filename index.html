@@ -113,7 +113,8 @@ textarea{width:100%;min-height:68px;resize:vertical;padding:11px 12px;border-rad
 </section>
 <div id="toast" role="status" aria-live="polite"></div>
 
-<script src="/config.js"></script>
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const SEV = {
@@ -199,21 +200,31 @@ $('photo').onchange = async e => {
 
 $('v-report').onsubmit = async e => {
   e.preventDefault();
+  if (!sb) return toast('Supabase is not configured yet. Add the project URL and anon key to config.js.', true);
   if (!draft) return toast('Place a pin on the map first.', true);
-  const fd = new FormData();
-  fd.append('lat', draft.lat); fd.append('lng', draft.lng);
-  fd.append('severity', document.querySelector('input[name=sev]:checked').value);
-  fd.append('type', document.querySelector('input[name=type]:checked').value);
-  fd.append('description', $('desc').value.trim());
-  if (photoBlob) fd.append('photo', photoBlob, 'road.jpg');
+  const inKanpur = draft.lat >= 26.30 && draft.lat <= 26.60 && draft.lng >= 80.15 && draft.lng <= 80.55;
+  if (!inKanpur) return toast('The pin must be inside Kanpur.', true);
   $('submit').disabled = true; $('submit').textContent = 'Submitting…';
+  let uploadedPath = null;
   try {
-    const r = await fetch('/api/reports', {method:'POST', body:fd}), j = await r.json();
-    if (!r.ok) throw new Error(j.error);
+    if (photoBlob) {
+      uploadedPath = crypto.randomUUID() + '.jpg';
+      const up = await sb.storage.from('road-photos').upload(uploadedPath, photoBlob, {contentType:'image/jpeg'});
+      if (up.error) throw up.error;
+    }
+    const ins = await sb.from('reports').insert({
+      lat:draft.lat, lng:draft.lng, photo_path:uploadedPath, description:$('desc').value.trim(),
+      severity:document.querySelector('input[name=sev]:checked').value,
+      type:document.querySelector('input[name=type]:checked').value
+    }).select(COLS).single();
+    if (ins.error) throw ins.error;
+    const j = norm(ins.data);
     reports.push(j); $('v-report').reset(); photoBlob = null; $('preview').style.display = 'none'; $('droptxt').textContent = '📷 Add a photo';
     setView('list'); render(); toast('Report submitted. Thank you!');
     map.flyTo([j.lat, j.lng], Math.max(map.getZoom(), 16)); setTimeout(() => markers[j.id] && markers[j.id].openPopup(), 900);
-  } catch (err) { toast(err.message || 'Could not submit. Check your connection.', true); }
+  } catch (err) {
+    toast(err.message || 'Could not submit. Check your connection.', true);
+  }
   $('submit').disabled = false; $('submit').textContent = 'Submit report';
 };
 
@@ -233,9 +244,9 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-v]'); if (!b) return;
   b.disabled = true;
   try {
-    const r = await fetch(`/api/reports/${b.dataset.id}/vote`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({vote:b.dataset.v})});
-    const j = await r.json(); if (!r.ok) throw new Error(j.error);
-    reports = reports.map(x => x.id === j.id ? j : x).filter(x => x.fixedVotes < 3);
+    const v = await sb.rpc('vote_report', {report_id:b.dataset.id, kind:b.dataset.v});
+    if (v.error) throw v.error;
+    await load();
     map.closePopup(); render(); toast('Thanks, your vote is recorded.');
   } catch (err) { toast(err.message, true); b.disabled = false; }
 });
@@ -263,8 +274,21 @@ $('list').onclick = e => {
   if (innerWidth <= 760) $('sheet').classList.add('min');
 };
 
-fetch('/api/reports').then(r => r.json()).then(d => { reports = d; render(); })
-  .catch(() => toast('Could not load reports. Refresh to try again.', true));
+const CFG = window.CONFIG || {};
+const sb = (window.supabase && CFG.supabaseUrl && CFG.supabaseKey)
+  ? supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey)
+  : null;
+const COLS = 'id,lat,lng,severity,type,description,photo_path,created_at,confirm_votes,fixed_votes';
+const norm = r => ({id:r.id, lat:r.lat, lng:r.lng, severity:r.severity, type:r.type, description:r.description || '',
+  photo: r.photo_path ? sb.storage.from('road-photos').getPublicUrl(r.photo_path).data.publicUrl : null,
+  createdAt:r.created_at, confirmVotes:r.confirm_votes, fixedVotes:r.fixed_votes});
+async function load() {
+  const q = await sb.from('reports').select(COLS).lt('fixed_votes', 3).order('created_at', {ascending:false}).limit(1000);
+  if (q.error) throw q.error;
+  reports = q.data.map(norm); render();
+}
+if (!sb) toast('Setup missing: add your Supabase details to config.js', true);
+else load().catch(err => toast(err.message || 'Could not load reports. Refresh to try again.', true));
 </script>
 </body>
 </html>
